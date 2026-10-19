@@ -1307,8 +1307,10 @@ def render_device_info_html(device: dict, max_width: str = "640px") -> str:
     build_id = device.get("build_id", "")
     soc_name = device.get("soc_name", "")   # e.g. QCS6490 from /sys/devices/soc0/machine
     soc_rev  = device.get("soc_revision", "")
-    serial   = device.get("serial", "")
-    ts       = device.get("captured_at", "")
+    serial          = device.get("serial", "")
+    network_address = device.get("network_address", "")
+    transport_type  = device.get("transport_type", "")
+    ts              = device.get("captured_at", "")
 
     # Build SoC string: "QCS6490 rev 1.0" or just "QCS6490"
     soc_str = soc_name
@@ -1333,7 +1335,11 @@ def render_device_info_html(device: dict, max_width: str = "640px") -> str:
     rows += row("OS", os_name)
     rows += row("Build", build_id)
     rows += row("Kernel", kernel)
-    rows += row("Serial", serial)
+    # Show "Network Address" for SSH transport, "Device ID" for ADB transport
+    if transport_type == "ssh":
+        rows += row("Network Address", network_address)
+    else:
+        rows += row("Device ID", serial)
     rows += row("Captured", ts)
 
     if not rows:

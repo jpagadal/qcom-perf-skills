@@ -300,8 +300,8 @@ def make_transport(args) -> Transport:
     """
     if hasattr(args, "host") and args.host:
         key_file = getattr(args, "key", None)
-        password = None
-        if not key_file:
+        password = getattr(args, "password", None)
+        if not key_file and not password:
             password = getpass.getpass(
                 f"  SSH password for {getattr(args, 'user', 'root') or 'root'}@{args.host}: "
             )
@@ -324,7 +324,28 @@ def get_device_info(transport: Transport) -> dict:
     Priority: /proc/device-tree/model > /sys/devices/soc0/machine > getprop
     Works identically over ADB and SSH.
     """
-    info = {"serial": transport.device_id}
+    # Determine transport type and populate device identifier fields accordingly.
+    # For SSH: store the IP/host as "network_address"; try to read hardware serial.
+    # For ADB: store the ADB serial as "serial"; no network_address.
+    connection_id = transport.device_id  # e.g. "ubuntu@10.92.165.93" or ADB serial
+
+    if "@" in connection_id:
+        # SSH transport
+        transport_type = "ssh"
+        network_address = connection_id.split("@", 1)[1]  # strip "user@", keep IP
+        _, hw_serial = transport.shell("cat /sys/devices/soc0/serial_num 2>/dev/null")
+        serial = hw_serial.strip()  # hardware serial if available, else empty
+    else:
+        # ADB transport
+        transport_type = "adb"
+        network_address = ""
+        serial = connection_id  # ADB serial number
+
+    info = {
+        "serial": serial,
+        "network_address": network_address,
+        "transport_type": transport_type,
+    }
 
     # Kernel version (always available)
     _, kernel = transport.shell("uname -r")
@@ -982,25 +1003,48 @@ DEBUGFS_SOURCES = [
 ]
 
 
+def pull_with_sudo_fallback(transport: Transport, remote: str, local: str) -> bool:
+    """
+    Pull a file from the device, falling back to 'sudo cat' if direct pull fails.
+    This handles /proc files that require elevated permissions (e.g. slabinfo, pagetypeinfo).
+    Uses 'sudo -n' (non-interactive) to avoid password prompts.
+    Returns True if the file was successfully retrieved by any method.
+    """
+    # Try normal pull first (works for most files)
+    if transport.pull(remote, local):
+        return True
+
+    # Fallback: try sudo cat (for permission-restricted files)
+    rc, output = transport.shell(f"sudo -n cat {remote} 2>/dev/null")
+    if rc == 0 and output.strip():
+        os.makedirs(os.path.dirname(os.path.abspath(local)), exist_ok=True)
+        with open(local, "w", encoding="utf-8", errors="replace") as f:
+            f.write(output)
+        return True
+
+    return False
+
+
 def collect_from_device(transport: Transport, output_dir: str) -> list:
     """
     Pull all memory files from device using the given transport.
     Returns list of collection errors.
     Output files are identical regardless of whether ADB or SSH is used.
+    For files that fail due to permissions, a sudo fallback is attempted automatically.
     """
     errors = []
     os.makedirs(output_dir, exist_ok=True)
 
-    # /proc sources
+    # /proc sources (sudo fallback for permission-restricted files)
     for key, remote, local_name in PROC_SOURCES:
         local = os.path.join(output_dir, local_name)
-        if not transport.pull(remote, local):
+        if not pull_with_sudo_fallback(transport, remote, local):
             errors.append({"source": key, "error": f"pull failed: {remote}"})
 
-    # debugfs sources
+    # debugfs sources (sudo fallback for debugfs files)
     for key, remote, local_name in DEBUGFS_SOURCES:
         local = os.path.join(output_dir, local_name)
-        if not transport.pull(remote, local):
+        if not pull_with_sudo_fallback(transport, remote, local):
             errors.append({"source": key, "error": f"pull failed: {remote}"})
 
     # CMA used (glob)
@@ -1342,7 +1386,8 @@ def main():
                       help="SSH port (default: 22)")
     conn.add_argument("--key", metavar="KEY_FILE",
                       help="SSH private key file (default: ~/.ssh/id_rsa)")
-    # Note: SSH password is always prompted interactively (never accepted on command line)
+    conn.add_argument("--password", metavar="PASSWORD",
+                      help="SSH password (if not provided, prompted interactively)")
 
     parser.add_argument("-o", "--output", default="mem_dump",
                         help="Output directory (default: mem_dump)")

@@ -181,6 +181,8 @@ def collect_cmd(args, out_dir: Path, label: str) -> list:
         cmd += ["--serial", args.serial]
     elif args.host:
         cmd += ["--host", args.host, "--user", args.user]
+        if getattr(args, "password", None):
+            cmd += ["--password", args.password]
     return cmd
 
 
@@ -949,6 +951,10 @@ def main() -> int:
     parser.add_argument(
         "--user", default="root",
         help="SSH username (default: root)"
+    )
+    parser.add_argument(
+        "--password", default=None,
+        help="SSH password (if not provided, prompted interactively)"
     )
 
     # --- Output parameters (all modes) ---
