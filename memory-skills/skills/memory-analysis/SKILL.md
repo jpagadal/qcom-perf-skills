@@ -11,7 +11,7 @@ description: >
   (4) Comparison: compare two pre-collected snapshots offline (no device needed).
   Generates a unified HTML report with memory breakdown, process ranking,
   kernel/userspace diffs, and root cause analysis.
-license: Proprietary. Internal use only.
+license: BSD 3-Clause License
 compatibility: >
   Requires Python 3.10+. pip install -r requirements.txt.
   ADB transport: adb in PATH, Qualcomm Linux device with adbd enabled.
