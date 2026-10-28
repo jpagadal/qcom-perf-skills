@@ -81,6 +81,7 @@ COLLECT           = INTERNAL / "data-collection"     / "scripts" / "collect.py"
 COMPARE_SNAPSHOTS = INTERNAL / "snapshot-comparison" / "scripts" / "compare_snapshots.py"
 KERNEL_DIFF       = INTERNAL / "kernel-diff"          / "scripts" / "analyze_kernel_diff.py"
 USERSPACE_DIFF    = INTERNAL / "userspace-diff"       / "scripts" / "analyze_userspace_diff.py"
+ANALYZE_RCA       = INTERNAL / "anomaly-rca"          / "scripts" / "analyze_rca.py"
 GENERATE_REPORT   = INTERNAL / "report-generation"    / "scripts" / "generate_report.py"
 
 PRESETS_FILE = SKILLS / "memory-analysis" / "usecases" / "presets.json"
@@ -335,7 +336,7 @@ def mode_snapshot(args, output_dir: Path) -> Path:
     # Generate report
     run([sys.executable, str(GENERATE_REPORT),
          "--input",              os.path.join(reports, "snapshot_comparison_report.json"),
-         "--format",             "html",
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,
@@ -468,12 +469,21 @@ def mode_workload(args, output_dir: Path) -> Path:
         "Running userspace memory diff")
 
     # Generate report
+    # Anomaly RCA
+    run([sys.executable, str(ANALYZE_RCA),
+         "--comparison-report", os.path.join(reports, "snapshot_comparison_report.json"),
+         "--kernel-diff",       os.path.join(reports, "kernel_diff_report.json"),
+         "--userspace-diff",    os.path.join(reports, "userspace_diff_report.json"),
+         "--output-dir",        reports],
+        "Running anomaly root cause analysis")
+
     run([sys.executable, str(GENERATE_REPORT),
          "--input",
              os.path.join(reports, "snapshot_comparison_report.json"),
              os.path.join(reports, "kernel_diff_report.json"),
              os.path.join(reports, "userspace_diff_report.json"),
-         "--format",             "html",
+             os.path.join(reports, "rca_report.json"),
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,
@@ -545,12 +555,21 @@ def mode_regression(args, output_dir: Path) -> Path:
         "Running userspace memory diff")
 
     # Generate report
+    # Anomaly RCA
+    run([sys.executable, str(ANALYZE_RCA),
+         "--comparison-report", os.path.join(reports, "snapshot_comparison_report.json"),
+         "--kernel-diff",       os.path.join(reports, "kernel_diff_report.json"),
+         "--userspace-diff",    os.path.join(reports, "userspace_diff_report.json"),
+         "--output-dir",        reports],
+        "Running anomaly root cause analysis")
+
     run([sys.executable, str(GENERATE_REPORT),
          "--input",
              os.path.join(reports, "snapshot_comparison_report.json"),
              os.path.join(reports, "kernel_diff_report.json"),
              os.path.join(reports, "userspace_diff_report.json"),
-         "--format",             "html",
+             os.path.join(reports, "rca_report.json"),
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,
@@ -621,12 +640,21 @@ def mode_comparison(args, output_dir: Path) -> Path:
         "Running userspace memory diff")
 
     # Generate report
+    # Anomaly RCA
+    run([sys.executable, str(ANALYZE_RCA),
+         "--comparison-report", os.path.join(reports, "snapshot_comparison_report.json"),
+         "--kernel-diff",       os.path.join(reports, "kernel_diff_report.json"),
+         "--userspace-diff",    os.path.join(reports, "userspace_diff_report.json"),
+         "--output-dir",        reports],
+        "Running anomaly root cause analysis")
+
     run([sys.executable, str(GENERATE_REPORT),
          "--input",
              os.path.join(reports, "snapshot_comparison_report.json"),
              os.path.join(reports, "kernel_diff_report.json"),
              os.path.join(reports, "userspace_diff_report.json"),
-         "--format",             "html",
+             os.path.join(reports, "rca_report.json"),
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,
@@ -771,13 +799,22 @@ def mode_user_launched_interactive(args, output_dir: Path) -> Path:
          "--format",         "json"],
         "Running userspace memory diff")
 
+    # Anomaly RCA
+    run([sys.executable, str(ANALYZE_RCA),
+         "--comparison-report", os.path.join(reports, "snapshot_comparison_report.json"),
+         "--kernel-diff",       os.path.join(reports, "kernel_diff_report.json"),
+         "--userspace-diff",    os.path.join(reports, "userspace_diff_report.json"),
+         "--output-dir",        reports],
+        "Running anomaly root cause analysis")
+
     # Generate report
     run([sys.executable, str(GENERATE_REPORT),
          "--input",
              os.path.join(reports, "snapshot_comparison_report.json"),
              os.path.join(reports, "kernel_diff_report.json"),
              os.path.join(reports, "userspace_diff_report.json"),
-         "--format",             "html",
+             os.path.join(reports, "rca_report.json"),
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,
@@ -849,13 +886,22 @@ def mode_user_launched_compare(args, output_dir: Path) -> Path:
          "--format",         "json"],
         "Running userspace memory diff")
 
+    # Anomaly RCA
+    run([sys.executable, str(ANALYZE_RCA),
+         "--comparison-report", os.path.join(reports, "snapshot_comparison_report.json"),
+         "--kernel-diff",       os.path.join(reports, "kernel_diff_report.json"),
+         "--userspace-diff",    os.path.join(reports, "userspace_diff_report.json"),
+         "--output-dir",        reports],
+        "Running anomaly root cause analysis")
+
     # Generate report
     run([sys.executable, str(GENERATE_REPORT),
          "--input",
              os.path.join(reports, "snapshot_comparison_report.json"),
              os.path.join(reports, "kernel_diff_report.json"),
              os.path.join(reports, "userspace_diff_report.json"),
-         "--format",             "html",
+             os.path.join(reports, "rca_report.json"),
+         "--format",             "html,xlsx",
          "--unified",
          "--title",              title,
          "--output-dir",         reports,

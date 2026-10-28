@@ -1493,6 +1493,223 @@ def render_findings_html(sections: list[tuple[str, str, dict]]) -> str:
 </table>"""
 
 
+def render_npoint_comparison_html(snap_sections: list) -> str:
+    """
+    Render a unified N-point comparison table for multiple snapshot_comparison sections.
+    Shows all N data points side-by-side with delta (last - first).
+    """
+    if len(snap_sections) < 2:
+        return ""
+
+    # Extract labels and summary_table.current from each section
+    labels = []
+    snaps  = []
+    for _, _, data in snap_sections:
+        label = data.get("current_label", "Snapshot")
+        st    = data.get("summary_table", {})
+        snap  = st.get("current", st.get("reference", {}))
+        labels.append(label)
+        snaps.append(snap)
+
+    n = len(snaps)
+
+    # Rows to display: (group, display_name, key, is_bold, is_hlos_banner_before)
+    ROWS = [
+        ("",      "Total RAM",                  "total_ram_kb",        True,  False),
+        ("NHLOS", "NHLOS Reserved",              "nhlos_kb",            False, False),
+        ("",      "System RAM",                  "system_ram_kb",       False, False),
+        ("HLOS",  "Kernel Static Memory",        "kernel_static_kb",    False, True),
+        ("HLOS",  "Kernel Dynamic Memory",       "kernel_dynamic_kb",   False, False),
+        ("HLOS",  "Hardware / Driver Buffers",   "hw_driver_kb",        False, False),
+        ("HLOS",  "User Space Apps",             "user_space_kb",       False, False),
+        ("",      "Total Available Memory",      "total_available_kb",  True,  False),
+    ]
+
+    # Sub-rows for expandable categories
+    KD_SUBS = [
+        ("Slab Allocator",          "Slab"),
+        ("Vmalloc",                 "Vmalloc"),
+        ("Kernel Stack",            "KernelStack"),
+        ("Page Tables",             "PageTables"),
+        ("CMA (Contiguous Memory)", "CMA"),
+        ("Kernel Modules",          "Modules"),
+    ]
+    US_SUBS = [
+        ("Anonymous Pages", "AnonPages"),
+        ("Shared Memory",   "Shmem"),
+    ]
+
+    delta_label = (f"Delta ({labels[-1]} &minus; {labels[0]})"
+                   if n == 2 else f"Delta (Last &minus; First)")
+
+    # Build header
+    hdr_vals = "".join(
+        f"<th style='text-align:right;padding:8px 12px;white-space:nowrap'>"
+        f"{l}<br><span style='font-weight:normal;font-size:11px'>(MB)</span></th>"
+        for l in labels
+    )
+    hdr_delta = (
+        f"<th style='text-align:right;padding:8px 12px;white-space:nowrap'>"
+        f"{delta_label}<br><span style='font-weight:normal;font-size:11px'>(MB)</span></th>"
+    )
+
+    def _mb(kb):
+        return round(kb / 1024)
+
+    def _val_cells(vals_kb, bold=False):
+        fw = "font-weight:bold;" if bold else ""
+        return "".join(
+            f"<td style='text-align:right;padding:7px 12px;{fw}'>{_mb(v)}</td>"
+            for v in vals_kb
+        )
+
+    def _delta_cell(vals_kb, bold=False):
+        d = vals_kb[-1] - vals_kb[0]
+        dm = _mb(d)
+        color = "#c00" if d > 0 else ("#060" if d < 0 else "#555")
+        fw = "font-weight:bold;" if (d != 0 or bold) else ""
+        sign = f"{dm:+}"
+        return (
+            f"<td style='text-align:right;padding:7px 12px;color:{color};{fw}'>{sign}</td>"
+        )
+
+    rows_html = ""
+    hlos_banner_shown = False
+
+    for group, display, key, is_bold, hlos_before in ROWS:
+        # HLOS banner row
+        if hlos_before and not hlos_banner_shown:
+            hlos_banner_shown = True
+            ncols_total = 2 + n + 1
+            rows_html += (
+                f"<tr style='background:#2c6fad;color:white'>"
+                f"<td colspan='{ncols_total}' style='padding:5px 12px;font-size:11px;"
+                f"font-weight:600;letter-spacing:1px'>&#x25B6; HLOS &mdash; High Level OS</td>"
+                f"</tr>\n"
+            )
+
+        vals_kb = [s.get(key, 0) for s in snaps]
+        bg = "#d0dff0" if is_bold else ("#e4edf8" if group == "NHLOS" else "#f0f5fb")
+        fw = "font-weight:bold;" if is_bold else ""
+
+        # Expandable sub-rows
+        sub_key = None
+        if key == "kernel_dynamic_kb":
+            sub_key = "kd"
+        elif key == "user_space_kb":
+            sub_key = "us"
+
+        onclick = f" onclick=\"toggleRows('{sub_key}-sub')\" style='cursor:pointer'" if sub_key else ""
+        expand_btn = (
+            f"<span id='btn-{sub_key}-sub' style='font-weight:bold;cursor:pointer;"
+            f"display:inline-block;width:14px;text-align:center'>+</span>"
+            if sub_key else ""
+        )
+
+        rows_html += (
+            f"<tr style='background:{bg}'{onclick}>"
+            f"<td style='padding:7px 12px;color:#555;font-size:11px;text-align:center'>"
+            f"{expand_btn}{group}</td>"
+            f"<td style='padding:7px 12px;{fw}'>{display}</td>"
+            f"{_val_cells(vals_kb, is_bold)}"
+            f"{_delta_cell(vals_kb, is_bold)}"
+            f"</tr>\n"
+        )
+
+        # Sub-rows
+        if key == "kernel_dynamic_kb":
+            for sub_display, sub_field in KD_SUBS:
+                sub_vals = [s.get("kernel_dynamic_breakdown", {}).get(sub_field, 0) for s in snaps]
+                rows_html += (
+                    f"<tr class='kd-sub' style='display:none;background:#f5f8ff'>"
+                    f"<td style='color:#888;font-size:11px;text-align:center'>HLOS</td>"
+                    f"<td style='padding:6px 12px 6px 28px;color:#444'>&#x2514; {sub_display}</td>"
+                    f"{_val_cells(sub_vals)}"
+                    f"{_delta_cell(sub_vals)}"
+                    f"</tr>\n"
+                )
+        elif key == "user_space_kb":
+            for sub_display, sub_field in US_SUBS:
+                sub_vals = [s.get("user_space_breakdown", {}).get(sub_field, 0) for s in snaps]
+                rows_html += (
+                    f"<tr class='us-sub' style='display:none;background:#f5f8ff'>"
+                    f"<td style='color:#888;font-size:11px;text-align:center'>HLOS</td>"
+                    f"<td style='padding:6px 12px 6px 28px;color:#444'>&#x2514; {sub_display}</td>"
+                    f"{_val_cells(sub_vals)}"
+                    f"{_delta_cell(sub_vals)}"
+                    f"</tr>\n"
+                )
+
+    # Top processes comparison table
+    seen_procs: set = set()
+    proc_order: list = []
+    proc_pss: dict = {}
+    for snap, lbl in zip(snaps, labels):
+        for proc in snap.get("top_processes", []):
+            full_cmd = proc.get("name", "")
+            short = full_cmd.split("/")[-1].split(" ")[0]
+            if short not in seen_procs:
+                proc_order.append(short)
+                seen_procs.add(short)
+            proc_pss.setdefault(short, {})[lbl] = round(proc.get("pss_kb", 0) / 1024, 1)
+    proc_order.sort(key=lambda x: max(proc_pss[x].values()), reverse=True)
+
+    proc_hdr = "".join(
+        f"<th style='text-align:right;padding:6px 10px;white-space:nowrap'>{l} (MB)</th>"
+        for l in labels
+    )
+    proc_rows = ""
+    for i, name in enumerate(proc_order[:20]):
+        bg = "#e4edf8" if i % 2 == 0 else "#f0f5fb"
+        pss_vals = [proc_pss[name].get(l, 0) for l in labels]
+        val_cells = "".join(
+            f"<td style='text-align:right;padding:6px 10px'>{v}</td>"
+            for v in pss_vals
+        )
+        proc_rows += (
+            f"<tr style='background:{bg}'>"
+            f"<td style='text-align:right;color:#888;font-size:11px;padding:6px 10px'>{i+1}</td>"
+            f"<td style='padding:6px 10px'>{name}</td>"
+            f"{val_cells}</tr>\n"
+        )
+
+    return f"""
+<div style='overflow-x:auto'>
+<table style='border-collapse:collapse;width:100%;font-family:Segoe UI,Arial,sans-serif;
+              font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,0.1);border-radius:6px;overflow:hidden'>
+<thead>
+<tr style='background:#1a3a5c;color:white'>
+  <th style='padding:10px 12px;text-align:left;width:80px'>Group</th>
+  <th style='padding:10px 12px;text-align:left'>Memory Category</th>
+  {hdr_vals}
+  {hdr_delta}
+</tr>
+</thead>
+<tbody>
+{rows_html}
+</tbody>
+</table>
+</div>
+
+<h3 style='margin-top:20px'>Top Processes by PSS
+  <span style='font-weight:normal;font-size:12px;color:#888'>(top 20)</span>
+</h3>
+<div style='overflow-x:auto'>
+<table style='border-collapse:collapse;width:100%;font-size:13px'>
+<thead>
+<tr style='background:#2c6fad;color:white'>
+  <th style='text-align:right;padding:6px 10px;width:32px'>#</th>
+  <th style='text-align:left;padding:6px 10px'>Process</th>
+  {proc_hdr}
+</tr>
+</thead>
+<tbody>
+{proc_rows}
+</tbody>
+</table>
+</div>"""
+
+
 def build_unified_html(sections: list[tuple[str, str, dict]], title: str) -> str:
     """
     Build a single unified HTML report.
@@ -1510,9 +1727,41 @@ def build_unified_html(sections: list[tuple[str, str, dict]], title: str) -> str
     # Sections that start collapsed
     COLLAPSED_BY_DEFAULT = {"kernel_diff", "userspace_diff"}
 
+    # Detect N-point comparison (multiple snapshot_comparison sections)
+    snap_secs = [(rt, p, d) for rt, p, d in sections if rt == "snapshot_comparison"]
+    is_npoint = len(snap_secs) > 1
+
     body = ""
     sec_id = 0
-    for rtype, path, data in sections:
+
+    if is_npoint:
+        # Render a single unified N-point comparison section
+        sec_id += 1
+        sid = f"sec-{sec_id}"
+        n = len(snap_secs)
+        labels = [d.get("current_label", f"Point {i+1}") for i, (_, _, d) in enumerate(snap_secs)]
+        npoint_content = render_npoint_comparison_html(snap_secs)
+        body += f"""
+<div class='section-block'>
+  <div class='section-header' onclick="toggleSection('{sid}')">
+    <span class='section-toggle' id='toggle-{sid}'>\u2212</span>
+    <span class='section-title'>Memory Comparison
+      <span style='font-weight:normal;font-size:12px;opacity:0.8;margin-left:8px'>
+        ({n} data points: {', '.join(labels)})
+      </span>
+    </span>
+  </div>
+  <div class='section-body' id='{sid}'>
+    {npoint_content}
+  </div>
+</div>
+"""
+        # Skip individual snapshot_comparison sections in the main loop
+        sections_to_render = [(rt, p, d) for rt, p, d in sections if rt != "snapshot_comparison"]
+    else:
+        sections_to_render = sections
+
+    for rtype, path, data in sections_to_render:
         sec_id += 1
         sid = f"sec-{sec_id}"
         _, renderer = SECTION_RENDERERS.get(
@@ -1644,6 +1893,287 @@ def build_txt(rtype: str, data: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# XLSX snapshot_comparison structured writer (supports N data points)
+# ---------------------------------------------------------------------------
+
+def _write_xlsx_snapshot_comparison(wb, snapshots: list):
+    """
+    Create 3-sheet Excel workbook for N-point snapshot/comparison.
+
+    snapshots: list of (label, snap_data, device_data) tuples
+        - label     : column header (e.g. "Build_v1", "Device_A", "snapshot")
+        - snap_data : summary_table dict (reference or current)
+        - device_data: device info dict
+    Supports N=1 (single snapshot), N=2 (comparison), N>2 (multi-point).
+    """
+    try:
+        from openpyxl.styles import PatternFill, Font, Alignment
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return
+
+    n       = len(snapshots)
+    labels  = [s[0] for s in snapshots]
+    snaps   = [s[1] for s in snapshots]
+    devices = [s[2] for s in snapshots]
+
+    HDR_DARK  = "1A3A5C"   # dark navy  (section headers)
+    HDR_MID   = "2C6FAD"   # mid blue   (column headers / HLOS banner)
+    ROW_ALT1  = "E4EDF8"   # light blue (odd rows)
+    ROW_ALT2  = "F0F5FB"   # lighter    (even rows)
+    ROW_BOLD  = "D0DFF0"   # bold summary rows
+    ROW_CHILD = "F5F8FF"   # child / sub-item rows
+    DELTA_POS = "FFD0D0"   # light red  (memory increased)
+    DELTA_NEG = "D0FFD0"   # light green (memory decreased)
+    WHITE     = "FFFFFF"
+
+    def hdr_font(color=WHITE):
+        return Font(bold=True, color=color)
+
+    def section_header(ws, title, ncols):
+        ws.append([title] + [""] * (ncols - 1))
+        r = ws.max_row
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=ncols)
+        for cell in ws[r]:
+            cell.font = Font(bold=True, color=WHITE, size=11)
+            cell.fill = PatternFill("solid", fgColor=HDR_DARK)
+            cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[r].height = 22
+
+    def col_header(ws, col_labels):
+        ws.append(col_labels)
+        for cell in ws[ws.max_row]:
+            cell.font = hdr_font()
+            cell.fill = PatternFill("solid", fgColor=HDR_MID)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[ws.max_row].height = 18
+
+    def add_row(ws, values, bg, bold=False, outline_level=0, hidden=False):
+        ws.append(values)
+        r = ws.max_row
+        for cell in ws[r]:
+            cell.fill = PatternFill("solid", fgColor=bg)
+            if bold:
+                cell.font = Font(bold=True)
+        if outline_level:
+            ws.row_dimensions[r].outline_level = outline_level
+            ws.row_dimensions[r].hidden = hidden
+
+    def color_delta_cell(ws, col_idx, delta_kb):
+        if n <= 1 or delta_kb is None:
+            return
+        cell = ws[ws.max_row][col_idx]
+        if delta_kb > 0:
+            cell.fill = PatternFill("solid", fgColor=DELTA_POS)
+        elif delta_kb < 0:
+            cell.fill = PatternFill("solid", fgColor=DELTA_NEG)
+
+    # Column layout
+    has_delta   = n > 1
+    ncols_mem   = 2 + n + (1 if has_delta else 0)
+    ncols_proc  = 2 + n
+    ncols_dev   = 1 + n if n > 1 else 2
+
+    if n == 1:
+        mem_col_headers  = ["Group", "Memory Category", "Value (MB)"]
+        proc_col_headers = ["#", "Process", "PSS (MB)"]
+    else:
+        delta_label = (f"Delta ({labels[1]} \u2212 {labels[0]})"
+                       if n == 2 else "Delta (Last \u2212 First)")
+        mem_col_headers  = (["Group", "Memory Category"]
+                            + [f"{l} (MB)" for l in labels]
+                            + [delta_label])
+        proc_col_headers = ["#", "Process"] + [f"{l} (MB)" for l in labels]
+
+    # ------------------------------------------------------------------ #
+    # Sheet 1 - Device Info                                               #
+    # ------------------------------------------------------------------ #
+    ws_dev = wb.create_sheet("Device Info")
+    ws_dev.column_dimensions["A"].width = 18
+    if n == 1:
+        ws_dev.column_dimensions["B"].width = 70
+    else:
+        for i in range(n):
+            ws_dev.column_dimensions[get_column_letter(i + 2)].width = 35
+
+    section_header(ws_dev, "DEVICE INFORMATION", ncols_dev)
+    col_header(ws_dev, ["Field"] + (labels if n > 1 else ["Value"]))
+
+    dev_fields = [
+        ("Machine",  lambda d: d.get("model", "")),
+        ("SoC",      lambda d: f"{d.get('soc_name','')} rev {d.get('soc_revision','')}"),
+        ("OS",       lambda d: d.get("os_name", "")),
+        ("Build",    lambda d: d.get("build_id", "")),
+        ("Kernel",   lambda d: d.get("kernel_version", "")),
+        ("Serial",   lambda d: d.get("serial", "")),
+        ("Captured", lambda d: d.get("captured_at", "")),
+    ]
+    for i, (field_label, field_fn) in enumerate(dev_fields):
+        bg = ROW_ALT1 if i % 2 == 0 else ROW_ALT2
+        values = [field_fn(d) for d in devices]
+        ws_dev.append([field_label] + values)
+        for cell in ws_dev[ws_dev.max_row]:
+            cell.fill = PatternFill("solid", fgColor=bg)
+        ws_dev[ws_dev.max_row][0].font = Font(bold=True, color="444444")
+
+    # ------------------------------------------------------------------ #
+    # Sheet 2 - Memory Summary                                            #
+    # ------------------------------------------------------------------ #
+    ws_mem = wb.create_sheet("Memory Summary")
+    ws_mem.column_dimensions["A"].width = 12
+    ws_mem.column_dimensions["B"].width = 38
+    for i in range(n):
+        ws_mem.column_dimensions[get_column_letter(i + 3)].width = 14
+    if has_delta:
+        ws_mem.column_dimensions[get_column_letter(n + 3)].width = 16
+    ws_mem.sheet_properties.outlinePr.summaryBelow = False
+
+    section_header(ws_mem, "MEMORY SUMMARY", ncols_mem)
+    col_header(ws_mem, mem_col_headers)
+
+    def _vals_kb(key_fn):
+        return [key_fn(s) for s in snaps]
+
+    def _delta(vals_kb):
+        return (vals_kb[-1] - vals_kb[0]) if has_delta else None
+
+    def mem_parent(group, category, vals_kb, bold=False, bg=ROW_ALT1):
+        d = _delta(vals_kb)
+        vals_mb = [round(v / 1024) for v in vals_kb]
+        row = [group, category] + vals_mb + ([round(d / 1024)] if has_delta else [])
+        add_row(ws_mem, row, bg, bold=bold)
+        color_delta_cell(ws_mem, ncols_mem - 1, d)
+
+    def mem_child(group, category, vals_kb):
+        d = _delta(vals_kb)
+        vals_mb = [round(v / 1024) for v in vals_kb]
+        row = [group, f"    \u2514 {category}"] + vals_mb + ([round(d / 1024)] if has_delta else [])
+        add_row(ws_mem, row, ROW_CHILD, outline_level=1, hidden=True)
+        color_delta_cell(ws_mem, ncols_mem - 1, d)
+
+    # Total RAM
+    mem_parent("", "Total RAM",
+               _vals_kb(lambda s: s.get("total_ram_kb", 0)),
+               bold=True, bg=ROW_BOLD)
+
+    # NHLOS Reserved + sub-items (union of all nodes across snapshots)
+    mem_parent("NHLOS", "NHLOS Reserved",
+               _vals_kb(lambda s: s.get("nhlos_kb", 0)), bg=ROW_ALT1)
+    seen_nhlos = set()
+    nhlos_names = []
+    for snap in snaps:
+        for node in snap.get("nhlos_nodes", []):
+            if node["name"] not in seen_nhlos:
+                nhlos_names.append(node["name"])
+                seen_nhlos.add(node["name"])
+    for name in nhlos_names:
+        node_maps = [{nd["name"]: nd["size_kb"] for nd in s.get("nhlos_nodes", [])} for s in snaps]
+        mem_child("NHLOS", name, [m.get(name, 0) for m in node_maps])
+
+    # System RAM
+    mem_parent("", "System RAM",
+               _vals_kb(lambda s: s.get("system_ram_kb", 0)), bg=ROW_ALT1)
+
+    # HLOS banner
+    ws_mem.append(["", "\u25B6 HLOS \u2014 High Level OS"] + [""] * (ncols_mem - 2))
+    for cell in ws_mem[ws_mem.max_row]:
+        cell.font = Font(bold=True, color=WHITE)
+        cell.fill = PatternFill("solid", fgColor=HDR_MID)
+
+    # Kernel Static Memory
+    mem_parent("HLOS", "Kernel Static Memory",
+               _vals_kb(lambda s: s.get("kernel_static_kb", 0)), bg=ROW_ALT2)
+    for key in ["Vmlinux", "Page Structs", "Hash Tables", "Early Boot Reservations"]:
+        vals = [s.get("kernel_static_breakdown", {}).get(key, 0) for s in snaps]
+        if any(v > 0 for v in vals):
+            mem_child("HLOS", key, vals)
+
+    # Kernel Dynamic Memory
+    kd_labels = {
+        "Slab": "Slab Allocator", "Vmalloc": "Vmalloc",
+        "KernelStack": "Kernel Stack", "PageTables": "Page Tables",
+        "Percpu": "Per-CPU", "SecPageTables": "Secondary Page Tables (Stage-2)",
+        "Modules": "Kernel Modules", "CMA": "CMA (Contiguous Memory)",
+        "KDA": "KDA (Kernel Direct Allocations)",
+    }
+    mem_parent("HLOS", "Kernel Dynamic Memory",
+               _vals_kb(lambda s: s.get("kernel_dynamic_kb", 0)), bg=ROW_ALT2)
+    for key, display in kd_labels.items():
+        vals = [s.get("kernel_dynamic_breakdown", {}).get(key, 0) for s in snaps]
+        mem_child("HLOS", display, vals)
+
+    # Hardware / Driver Buffers
+    mem_parent("HLOS", "Hardware / Driver Buffers",
+               _vals_kb(lambda s: s.get("hw_driver_kb", 0)), bg=ROW_ALT2)
+    mem_child("HLOS", "DMA-BUF Buffers",
+              [s.get("hw_driver_breakdown", {}).get("DMA-BUF", 0) for s in snaps])
+    seen_exp = set()
+    exp_names = []
+    for snap in snaps:
+        for exp in snap.get("hw_driver_breakdown", {}).get("DMA-BUF_exporters", {}).keys():
+            if exp not in seen_exp:
+                exp_names.append(exp)
+                seen_exp.add(exp)
+    for exp in exp_names:
+        mem_child("HLOS", f"  \u2514 {exp}",
+                  [s.get("hw_driver_breakdown", {}).get("DMA-BUF_exporters", {}).get(exp, 0)
+                   for s in snaps])
+    mem_child("HLOS", "KGSL GPU Memory",
+              [s.get("hw_driver_breakdown", {}).get("KGSL", 0) for s in snaps])
+
+    # User Space Apps
+    us_labels = {"AnonPages": "Anonymous Pages", "Shmem": "Shared Memory"}
+    mem_parent("HLOS", "User Space Apps",
+               _vals_kb(lambda s: s.get("user_space_kb", 0)), bg=ROW_ALT2)
+    for key, display in us_labels.items():
+        vals = [s.get("user_space_breakdown", {}).get(key, 0) for s in snaps]
+        mem_child("HLOS", display, vals)
+
+    # Total Available Memory
+    avail_labels = {"MemFree": "Free Memory", "Cached": "Page Cache", "Buffers": "Buffers"}
+    mem_parent("HLOS", "Total Available Memory",
+               _vals_kb(lambda s: s.get("total_available_kb", 0)),
+               bold=True, bg=ROW_BOLD)
+    for key, display in avail_labels.items():
+        vals = [s.get("total_available_breakdown", {}).get(key, 0) for s in snaps]
+        mem_child("HLOS", display, vals)
+
+    # ------------------------------------------------------------------ #
+    # Sheet 3 - Top Processes                                             #
+    # ------------------------------------------------------------------ #
+    ws_proc = wb.create_sheet("Top Processes")
+    ws_proc.column_dimensions["A"].width = 6
+    ws_proc.column_dimensions["B"].width = 45
+    for i in range(n):
+        ws_proc.column_dimensions[get_column_letter(i + 3)].width = 14
+
+    section_header(ws_proc, "TOP PROCESSES BY PSS", ncols_proc)
+    col_header(ws_proc, proc_col_headers)
+
+    # Build union of all processes across all snapshots, keyed by short name
+    seen_procs = set()
+    proc_order = []
+    proc_pss = {}   # short_name -> {label: pss_mb}
+    for snap, lbl in zip(snaps, labels):
+        for proc in snap.get("top_processes", []):
+            full_cmd = proc.get("name", "")
+            short = full_cmd.split("/")[-1].split(" ")[0]
+            if short not in seen_procs:
+                proc_order.append(short)
+                seen_procs.add(short)
+            proc_pss.setdefault(short, {})[lbl] = round(proc.get("pss_kb", 0) / 1024, 1)
+
+    # Sort by max PSS across all snapshots (descending)
+    proc_order.sort(key=lambda x: max(proc_pss[x].values()), reverse=True)
+
+    for i, name in enumerate(proc_order, 1):
+        pss_vals = [proc_pss[name].get(l, 0) for l in labels]
+        bg = ROW_ALT1 if i % 2 == 1 else ROW_ALT2
+        ws_proc.append([i, name] + pss_vals)
+        for cell in ws_proc[ws_proc.max_row]:
+            cell.fill = PatternFill("solid", fgColor=bg)
+        ws_proc[ws_proc.max_row][0].alignment = Alignment(horizontal="center")
+# ---------------------------------------------------------------------------
 # XLSX writer
 # ---------------------------------------------------------------------------
 
@@ -1657,6 +2187,7 @@ def write_xlsx_unified(sections: list[tuple[str, str, dict]], output_path: str):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)  # remove default sheet
 
+    _snap_done = [False]  # flag: process snapshot_comparison only once
     for rtype, path, data in sections:
         sheet_name = rtype[:31]  # Excel sheet name limit
         ws = wb.create_sheet(sheet_name)
@@ -1664,17 +2195,106 @@ def write_xlsx_unified(sections: list[tuple[str, str, dict]], output_path: str):
         ws.append([])
 
         if rtype == "rca":
-            ws.append(["ID", "Severity", "Title", "Confidence", "Layer", "Hypothesis"])
-            for cell in ws[ws.max_row]:
+            from openpyxl.styles import Alignment
+            from openpyxl.utils import get_column_letter
+            HDR_DARK = "1A3A5C"
+            HDR_MID  = "2C6FAD"
+            SEV_COLORS = {"CRITICAL": "FFD0D0", "WARNING": "FFF8E0", "INFO": "E8F4FD"}
+            SEV_BG     = {"CRITICAL": "C00000", "WARNING": "E6A817", "INFO": "2C6FAD"}
+            ROW_ALT1   = "E4EDF8"
+            ROW_ALT2   = "F0F5FB"
+            WHITE      = "FFFFFF"
+
+            s = data.get("summary", {})
+            health = s.get("overall_health", "UNKNOWN")
+            health_colors = {"HEALTHY": "D4EDDA", "DEGRADED": "FFF3CD", "CRITICAL": "F8D7DA"}
+            health_bg = health_colors.get(health, "F0F0F0")
+
+            # Remove the generic "Source:" rows and rebuild with proper header
+            # (sheet was already created with source row — clear and redo)
+            ws.delete_rows(1, ws.max_row)
+
+            # Section header
+            ws.append(["ROOT CAUSE ANALYSIS"])
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color=WHITE, size=11)
+                cell.fill = PatternFill("solid", fgColor=HDR_DARK)
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[1].height = 22
+
+            # Overall health summary row
+            ws.append([f"Overall Health: {health}",
+                       f"Critical: {s.get('critical',0)}",
+                       f"Warning: {s.get('warning',0)}",
+                       f"Info: {s.get('info',0)}",
+                       f"Layers: {', '.join(s.get('layers_affected',[]))}",
+                       f"Mode: {s.get('mode','')}"])
+            for cell in ws[2]:
+                cell.fill = PatternFill("solid", fgColor=health_bg)
                 cell.font = Font(bold=True)
-            for a in data.get("anomalies", []):
-                ws.append([a["id"], a["severity"], a["title"],
-                           f"{a['confidence']:.0%}", a["layer"], a["hypothesis"]])
-                sev_colors = {"CRITICAL": "FFE0E0", "WARNING": "FFF8E0", "INFO": "E8F4FD"}
-                fill_color = sev_colors.get(a["severity"])
-                if fill_color:
-                    for cell in ws[ws.max_row]:
-                        cell.fill = PatternFill("solid", fgColor=fill_color)
+            ws.row_dimensions[2].height = 18
+
+            ws.append([])  # spacer
+
+            # Column headers
+            ws.append(["Severity", "ID", "Title", "Confidence", "Layer", "Hypothesis"])
+            for cell in ws[ws.max_row]:
+                cell.font = Font(bold=True, color=WHITE)
+                cell.fill = PatternFill("solid", fgColor=HDR_MID)
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[ws.max_row].height = 18
+
+            anomalies = data.get("anomalies", [])
+            for i, a in enumerate(anomalies):
+                sev = a.get("severity", "INFO")
+                bg  = SEV_COLORS.get(sev, "FFFFFF")
+                sev_bg = SEV_BG.get(sev, "555555")
+
+                # Main anomaly row
+                ws.append([sev, a["id"], a["title"],
+                           f"{a['confidence']:.0%}", a.get("layer",""), a["hypothesis"]])
+                r = ws.max_row
+                for cell in ws[r]:
+                    cell.fill = PatternFill("solid", fgColor=bg)
+                ws[r][0].font = Font(bold=True, color=WHITE)
+                ws[r][0].fill = PatternFill("solid", fgColor=sev_bg)
+                ws[r][0].alignment = Alignment(horizontal="center")
+                ws.row_dimensions[r].height = 16
+
+                # Evidence sub-rows
+                for ev in a.get("evidence", []):
+                    src   = ev.get("source", "")
+                    finding = ev.get("finding", "")
+                    ws.append(["", f"  \u2514 Evidence [{src}]", finding, "", "", ""])
+                    r2 = ws.max_row
+                    for cell in ws[r2]:
+                        cell.fill = PatternFill("solid", fgColor="F5F8FF")
+                        cell.font = Font(italic=True, size=11)
+                    ws[r2][1].font = Font(bold=True, color="2C6FAD", size=11)
+                    ws.row_dimensions[r2].height = 14
+
+                # Recommended actions sub-rows
+                for j, act in enumerate(a.get("recommended_actions", []), 1):
+                    ws.append(["", f"  \u2514 Action {j}", act, "", "", ""])
+                    r3 = ws.max_row
+                    for cell in ws[r3]:
+                        cell.fill = PatternFill("solid", fgColor="F0F5FF")
+                        cell.font = Font(size=11)
+                    ws[r3][1].font = Font(bold=True, color="155724", size=11)
+                    ws.row_dimensions[r3].height = 14
+
+                # Spacer between anomalies
+                if i < len(anomalies) - 1:
+                    ws.append([])
+
+            # Column widths
+            ws.column_dimensions["A"].width = 12
+            ws.column_dimensions["B"].width = 18
+            ws.column_dimensions["C"].width = 50
+            ws.column_dimensions["D"].width = 12
+            ws.column_dimensions["E"].width = 14
+            ws.column_dimensions["F"].width = 60
 
         elif rtype == "carveout_validation":
             ws.append(["Carveout", "Base Address", "Size (MB)", "Status"])
@@ -1686,38 +2306,231 @@ def write_xlsx_unified(sections: list[tuple[str, str, dict]], output_path: str):
                            round(size_mb, 2), "FOUND"])
 
         elif rtype == "snapshot_comparison":
-            ws.append(["Category", "Reference MB", "Current MB", "Delta MB", "Delta %", "Trend"])
-            for cell in ws[ws.max_row]:
-                cell.font = Font(bold=True)
-            for cat in data.get("categories", []):
-                ws.append([cat["category"],
-                           round(cat["reference_kb"] / 1024, 2),
-                           round(cat["current_kb"] / 1024, 2),
-                           round(cat["delta_kb"] / 1024, 2),
-                           cat["delta_pct"], cat["trend"]])
+            # Remove the placeholder sheet.
+            # Collect ALL snapshot_comparison sections and build snapshots list once.
+            wb.remove(ws)
+            if not _snap_done[0]:
+                _snap_done[0] = True
+                snap_secs = [(rt, p, d) for rt, p, d in sections
+                             if rt == "snapshot_comparison"]
+                snapshots = []
+                if len(snap_secs) == 1:
+                    d0 = snap_secs[0][2]
+                    st = d0.get("summary_table", {})
+                    is_standalone = (
+                        d0.get("current_snapshot_id") == d0.get("reference_snapshot_id")
+                        and d0.get("current_snapshot_id", "") != ""
+                    )
+                    if is_standalone:
+                        snapshots.append((
+                            d0.get("current_label", "Snapshot"),
+                            st.get("current", st.get("reference", {})),
+                            d0.get("device", {}),
+                        ))
+                    else:
+                        snapshots.append((
+                            d0.get("reference_label", "Reference"),
+                            st.get("reference", {}),
+                            d0.get("device", {}),
+                        ))
+                        snapshots.append((
+                            d0.get("current_label", "Current"),
+                            st.get("current", {}),
+                            d0.get("device", {}),
+                        ))
+                else:
+                    import re as _re
+                    # Build raw labels, enriching with timestamp from path when available
+                    raw_labels = []
+                    for _, p, d0 in snap_secs:
+                        lbl = d0.get("current_label", "Snapshot")
+                        ts_m = _re.search(r'(\d{8})_(\d{6})', p)
+                        if ts_m:
+                            d, t = ts_m.group(1), ts_m.group(2)
+                            lbl = f"{lbl} ({d[6:]}/{d[4:6]} {t[:2]}:{t[2:4]})"
+                        raw_labels.append(lbl)
+                    # If duplicates remain, append a counter suffix
+                    seen: dict = {}
+                    final_labels = []
+                    for lbl in raw_labels:
+                        if raw_labels.count(lbl) > 1:
+                            seen[lbl] = seen.get(lbl, 0) + 1
+                            final_labels.append(f"{lbl} #{seen[lbl]}")
+                        else:
+                            final_labels.append(lbl)
+                    for (_, _, d0), lbl in zip(snap_secs, final_labels):
+                        st = d0.get("summary_table", {})
+                        snapshots.append((
+                            lbl,
+                            st.get("current", st.get("reference", {})),
+                            d0.get("device", {}),
+                        ))
+                _write_xlsx_snapshot_comparison(wb, snapshots)
 
         elif rtype == "kernel_diff":
+            from openpyxl.styles import Alignment
+            HDR_DARK = "1A3A5C"
+            HDR_MID  = "2C6FAD"
+            WHITE    = "FFFFFF"
+            ROW_ALT1 = "E4EDF8"
+            ROW_ALT2 = "F0F5FB"
+
+            ws.delete_rows(1, ws.max_row)
+
+            # Section header
+            ws.append(["KERNEL MEMORY DIFF — SLAB CHANGES"])
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color=WHITE, size=11)
+                cell.fill = PatternFill("solid", fgColor=HDR_DARK)
+            ws.row_dimensions[1].height = 22
+
+            # Buddy fragmentation summary
+            bd = data.get("buddy_fragmentation", {})
+            ws.append([f"Buddy Fragmentation Index: {bd.get('reference_index',0):.4f} \u2192 {bd.get('current_index',0):.4f}  (delta: {bd.get('fragmentation_index_delta',0):+.4f})",
+                       "", "", "", "", ""])
+            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=6)
+            ws[2][0].fill = PatternFill("solid", fgColor="EDF3FB")
+            ws[2][0].font = Font(italic=True, size=11)
+            ws.row_dimensions[2].height = 16
+
+            ws.append([])
+
+            # Column headers
             ws.append(["Slab", "Ref KB", "Cur KB", "Delta KB", "Delta %", "Flagged"])
             for cell in ws[ws.max_row]:
-                cell.font = Font(bold=True)
-            for s in data.get("slab_diff", []):
+                cell.font = Font(bold=True, color=WHITE)
+                cell.fill = PatternFill("solid", fgColor=HDR_MID)
+                cell.alignment = Alignment(horizontal="center")
+            ws.row_dimensions[ws.max_row].height = 18
+
+            for i, s in enumerate(data.get("slab_diff", [])):
+                bg = "FFF8E0" if s.get("flagged") else (ROW_ALT1 if i % 2 == 0 else ROW_ALT2)
                 ws.append([s["name"], s["ref_kb"], s["cur_kb"],
-                           s["delta_kb"], s["delta_pct"], s.get("flagged", False)])
+                           s["delta_kb"], s["delta_pct"],
+                           "\u26A0 FLAGGED" if s.get("flagged") else ""])
+                for cell in ws[ws.max_row]:
+                    cell.fill = PatternFill("solid", fgColor=bg)
+                if s.get("flagged"):
+                    ws[ws.max_row][5].font = Font(bold=True, color="C00000")
+
+            # Findings
+            findings = data.get("findings", [])
+            if findings:
+                ws.append([])
+                ws.append(["FINDINGS", "", "", "", "", ""])
+                ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                ws[ws.max_row][0].font = Font(bold=True, color=WHITE)
+                ws[ws.max_row][0].fill = PatternFill("solid", fgColor=HDR_DARK)
+                for f in findings:
+                    sev_bg = {"CRITICAL": "FFD0D0", "WARNING": "FFF8E0", "INFO": "E8F4FD"}.get(f["severity"], "FFFFFF")
+                    ws.append([f"[{f['severity']}] {f['message']}", "", "", "", "", ""])
+                    ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                    ws[ws.max_row][0].fill = PatternFill("solid", fgColor=sev_bg)
+
+            ws.column_dimensions["A"].width = 40
+            ws.column_dimensions["B"].width = 12
+            ws.column_dimensions["C"].width = 12
+            ws.column_dimensions["D"].width = 12
+            ws.column_dimensions["E"].width = 10
+            ws.column_dimensions["F"].width = 14
 
         elif rtype == "userspace_diff":
-            ws.append(["Process", "Ref PSS KB", "Cur PSS KB", "Delta PSS KB", "Delta %", "Status"])
-            for cell in ws[ws.max_row]:
-                cell.font = Font(bold=True)
-            for p in data.get("process_diff", []):
-                ws.append([p["name"], p["ref_pss_kb"], p["cur_pss_kb"],
-                           p["delta_pss_kb"], p["delta_pct"],
-                           "FLAGGED" if p.get("flagged") else ""])
-            for p in data.get("new_processes", []):
-                ws.append([p["name"], 0, p.get("pss_kb", 0), p.get("pss_kb", 0), "", "NEW"])
-                ws[ws.max_row][5].fill = PatternFill("solid", fgColor="E8F8E8")
-            for p in data.get("exited_processes", []):
-                ws.append([p["name"], p.get("pss_kb", 0), 0, -p.get("pss_kb", 0), "", "EXITED"])
-                ws[ws.max_row][5].fill = PatternFill("solid", fgColor="FDE8E8")
+            from openpyxl.styles import Alignment
+            HDR_DARK = "1A3A5C"
+            HDR_MID  = "2C6FAD"
+            WHITE    = "FFFFFF"
+            ROW_ALT1 = "E4EDF8"
+            ROW_ALT2 = "F0F5FB"
+
+            ws.delete_rows(1, ws.max_row)
+
+            # Section header
+            ws.append(["USERSPACE MEMORY DIFF — PROCESS CHANGES"])
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+            for cell in ws[1]:
+                cell.font = Font(bold=True, color=WHITE, size=11)
+                cell.fill = PatternFill("solid", fgColor=HDR_DARK)
+            ws.row_dimensions[1].height = 22
+
+            ws.append([])
+
+            # Changed processes
+            changed = [p for p in data.get("process_diff", []) if p.get("delta_pss_kb", 0) != 0]
+            if changed:
+                ws.append(["CHANGED PROCESSES", "", "", "", "", ""])
+                ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                ws[ws.max_row][0].font = Font(bold=True, color=WHITE)
+                ws[ws.max_row][0].fill = PatternFill("solid", fgColor=HDR_MID)
+
+                ws.append(["Process", "Ref PSS (MB)", "Cur PSS (MB)", "Delta (MB)", "Delta %", "Status"])
+                for cell in ws[ws.max_row]:
+                    cell.font = Font(bold=True, color=WHITE)
+                    cell.fill = PatternFill("solid", fgColor=HDR_MID)
+                    cell.alignment = Alignment(horizontal="center")
+
+                for i, p in enumerate(sorted(changed, key=lambda x: abs(x.get("delta_pss_kb",0)), reverse=True)):
+                    bg = "FFF8E0" if p.get("flagged") else (ROW_ALT1 if i % 2 == 0 else ROW_ALT2)
+                    ws.append([p["name"],
+                               round(p["ref_pss_kb"]/1024, 1),
+                               round(p["cur_pss_kb"]/1024, 1),
+                               round(p["delta_pss_kb"]/1024, 1),
+                               p["delta_pct"],
+                               "\u26A0 FLAGGED" if p.get("flagged") else ""])
+                    for cell in ws[ws.max_row]:
+                        cell.fill = PatternFill("solid", fgColor=bg)
+                    delta_cell = ws[ws.max_row][3]
+                    if p["delta_pss_kb"] > 0:
+                        delta_cell.font = Font(bold=True, color="C00000")
+                    elif p["delta_pss_kb"] < 0:
+                        delta_cell.font = Font(bold=True, color="155724")
+
+            # New processes
+            new_procs = data.get("new_processes", [])
+            if new_procs:
+                ws.append([])
+                ws.append([f"NEW PROCESSES ({len(new_procs)})", "", "", "", "", ""])
+                ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                ws[ws.max_row][0].font = Font(bold=True, color=WHITE)
+                ws[ws.max_row][0].fill = PatternFill("solid", fgColor="155724")
+                for p in sorted(new_procs, key=lambda x: x.get("pss_kb",0), reverse=True):
+                    ws.append([p["name"], "", round(p.get("pss_kb",0)/1024, 1), "", "", "NEW"])
+                    for cell in ws[ws.max_row]:
+                        cell.fill = PatternFill("solid", fgColor="D4EDDA")
+
+            # Exited processes
+            exited_procs = data.get("exited_processes", [])
+            if exited_procs:
+                ws.append([])
+                ws.append([f"EXITED PROCESSES ({len(exited_procs)})", "", "", "", "", ""])
+                ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                ws[ws.max_row][0].font = Font(bold=True, color=WHITE)
+                ws[ws.max_row][0].fill = PatternFill("solid", fgColor="721C24")
+                for p in sorted(exited_procs, key=lambda x: x.get("pss_kb",0), reverse=True):
+                    ws.append([p["name"], round(p.get("pss_kb",0)/1024, 1), "", "", "", "EXITED"])
+                    for cell in ws[ws.max_row]:
+                        cell.fill = PatternFill("solid", fgColor="F8D7DA")
+
+            # Findings
+            findings = data.get("findings", [])
+            if findings:
+                ws.append([])
+                ws.append(["FINDINGS", "", "", "", "", ""])
+                ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                ws[ws.max_row][0].font = Font(bold=True, color=WHITE)
+                ws[ws.max_row][0].fill = PatternFill("solid", fgColor=HDR_DARK)
+                for f in findings:
+                    sev_bg = {"CRITICAL": "FFD0D0", "WARNING": "FFF8E0", "INFO": "E8F4FD"}.get(f["severity"], "FFFFFF")
+                    ws.append([f"[{f['severity']}] {f['message']}", "", "", "", "", ""])
+                    ws.merge_cells(start_row=ws.max_row, start_column=1, end_row=ws.max_row, end_column=6)
+                    ws[ws.max_row][0].fill = PatternFill("solid", fgColor=sev_bg)
+
+            ws.column_dimensions["A"].width = 50
+            ws.column_dimensions["B"].width = 14
+            ws.column_dimensions["C"].width = 14
+            ws.column_dimensions["D"].width = 12
+            ws.column_dimensions["E"].width = 10
+            ws.column_dimensions["F"].width = 12
 
     wb.save(output_path)
     print(f"[report-generation] XLSX  -> {output_path}")
@@ -1785,7 +2598,13 @@ def main():
             out = os.path.join(args.output_dir, "unified_report.xlsx")
             write_xlsx_unified(loaded, out)
     else:
-        # Individual reports per input
+        # Individual reports per input.
+        # For XLSX: group all snapshot_comparison sections together so that
+        # multiple input files produce a single multi-point workbook.
+        snap_comp_loaded = [(rt, p, d) for rt, p, d in loaded
+                            if rt == "snapshot_comparison"]
+        snap_xlsx_done = False
+
         for rtype, path, data in loaded:
             base = os.path.splitext(os.path.basename(path))[0]
             title = f"{rtype.replace('_', ' ').title()} Report"
@@ -1802,8 +2621,15 @@ def main():
                     f.write(txt)
                 print(f"[report-generation] TXT   -> {out}")
             if "xlsx" in formats:
-                out = os.path.join(args.output_dir, f"{base}.xlsx")
-                write_xlsx_unified([(rtype, path, data)], out)
+                if rtype == "snapshot_comparison" and len(snap_comp_loaded) > 1:
+                    # Multi-point: write once using all snapshot_comparison sections
+                    if not snap_xlsx_done:
+                        snap_xlsx_done = True
+                        out = os.path.join(args.output_dir, "snapshot_comparison_report.xlsx")
+                        write_xlsx_unified(snap_comp_loaded, out)
+                else:
+                    out = os.path.join(args.output_dir, f"{base}.xlsx")
+                    write_xlsx_unified([(rtype, path, data)], out)
 
     print(f"\n[report-generation] Done. {len(loaded)} report(s) processed.")
     return 0
